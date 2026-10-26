@@ -1,15 +1,9 @@
 {
-  "name": "gloop-gang",
-  "version": "1.1.0",
-  "private": true,
-  "description": "Instant-matchmaking mobile-first co-op game with no-code public matches",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
-    "test": "node test-server.js && node test-matchmaking.js && node test-game.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {}
+  "name":"gloop-gang-rift-rumble",
+  "version":"2.0.0",
+  "private":true,
+  "description":"Mobile-first two-lane real-time strategy battler",
+  "scripts":{"start":"node server.js","test":"node test.js"},
+  "engines":{"node":">=18"},
+  "dependencies":{}
 }

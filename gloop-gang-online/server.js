@@ -4,16 +4,20 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const Game = require('./public/core.js');
 
 const PUBLIC = path.join(__dirname, 'public');
-const MAX_ROOM = 4;
+const MAX_ROOM = 2;
 const PORT = Number(process.env.PORT) || 3000;
 const rooms = new Map();
+const queue = [];
+const connections = new Set();
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const mime = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.webmanifest':'application/manifest+json','.json':'application/json; charset=utf-8'};
 
 const server = http.createServer((req, res) => {
   let pathname, filePath;
+  if(req.url==='/health'){res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ok:true,rooms:rooms.size,queue:queue.length}));}
   try {pathname = new URL(req.url, 'http://localhost').pathname; filePath = path.resolve(PUBLIC, '.' + decodeURIComponent(pathname === '/' ? '/index.html' : pathname));}
   catch {res.writeHead(400); return res.end('Invalid path');}
   if (!filePath.startsWith(PUBLIC + path.sep) && filePath !== PUBLIC) {res.writeHead(403); return res.end('Forbidden');}
@@ -73,98 +77,93 @@ server.on('upgrade',(req,socket,head)=>{
   socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');
   const ws=new SocketClient(socket,head);wss.clients.add(ws);onConnection(ws);
 });
-function send(ws, msg) { if (ws?.readyState === 1) ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)); }
-function code() {
-  for (let j=0;j<100;j++) {
-    const b=crypto.randomBytes(6); const id=Array.from(b, v=>alphabet[v%alphabet.length]).join('');
-    if (!rooms.has(id)) return id;
+function send(ws,obj){if(ws&&ws.readyState===1)ws.send(JSON.stringify(obj));}
+function broadcast(room,obj){for(const player of room.sockets)if(player)send(player,obj);}
+function code(){for(let t=0;t<20;t++){let s=crypto.randomBytes(5).toString('hex').slice(0,6).toUpperCase();if(!rooms.has(s))return s;}return crypto.randomUUID().slice(0,6).toUpperCase();}
+function profile(p){return Game.safeProfile(p);}
+function queueRemove(ws){const i=queue.indexOf(ws);if(i>=0)queue.splice(i,1);}
+function clearRoom(ws){
+ queueRemove(ws);const room=ws.room;ws.room=null;
+ if(!room)return;
+ if(room.phase==='waiting') {rooms.delete(room.code);broadcast(room,{type:'notice',message:'Your friend left the party.'});for(const s of room.sockets)if(s)s.room=null;}
+ else if(room.phase==='playing'&&room.game){if(!room.game.bot&&room.game.phase==='playing'){
+   const side=room.sockets.indexOf(ws);if(side>=0){room.game.phase='over';room.game.winner=1-side;room.game.reason='FORFEIT';}
+   emitState(room);finishRound(room);
+ } else if(room.game.bot){rooms.delete(room.code);}}
+ else if(room.phase==='over'){if(room.sockets.every(s=>!s||s.readyState!==1))rooms.delete(room.code);}
+}
+function start(room,versusBot=false){
+ room.phase='playing';room.again=new Set();room.bot=versusBot;
+ let sockets=room.sockets;
+ const a=room.profiles[0]||profile({name:'Player 1'}),b=versusBot?profile({name:'Glooptron',trophies:200,deck:Game.DEFAULT_DECK}):(room.profiles[1]||profile({name:'Player 2'}));
+ room.game=Game.newGame(a,b,versusBot);
+ room.updated=Date.now();room.elapsed=0;room.lastState=0;room.lastBot=0;
+ for(let i=0;i<2;i++)if(sockets[i])send(sockets[i],{type:'start',code:room.code,side:i,mode:room.mode,bot:versusBot,state:Game.snapshot(room.game)});
+}
+function emitState(room){if(!room.game)return;broadcast(room,{type:'state',state:Game.snapshot(room.game)});}
+function finishRound(room){if(!room.game||room.sentResult||room.game.phase!=='over')return;
+ room.phase='over';room.sentResult=true;
+ for(let i=0;i<2;i++)if(room.sockets[i]){
+  const win=room.game.winner===i,draw=room.game.winner===-1;
+  send(room.sockets[i],{type:'result',winner:room.game.winner,reason:room.game.reason,coins:draw?45:win?100:40,trophies:room.bot?(win?12:0):(draw?0:win?28:-12),xp:draw?35:win?80:45});
+ }
+}
+function newRoom(ws,mode){const id=code();const room={code:id,mode,sockets:[ws,null],profiles:[ws.profile,null],phase:'waiting',created:Date.now(),sentResult:false};rooms.set(id,room);ws.room=room;return room;}
+function queueJoin(ws,p){clearRoom(ws);ws.profile=profile(p);const match=queue.find(c=>c!==ws&&c.readyState===1&&!c.room);
+ if(match){queueRemove(match);const room=newRoom(match,'online');room.sockets[1]=ws;room.profiles[1]=ws.profile;ws.room=room;start(room,false);}
+ else {queue.push(ws);ws.queuedAt=Date.now();send(ws,{type:'queue',message:'Searching for another player…'});}}
+function onConnection(ws){connections.add(ws);ws.profile=profile({});send(ws,{type:'hello'});
+ ws.alive=true;ws.on('pong',()=>ws.alive=true);
+ ws.on('message',raw=>{
+  if(raw.length>6000)return;
+  let m;try{m=JSON.parse(raw.toString());}catch{return;}
+  if(!m||typeof m.type!=='string')return;
+  if(m.type==='queue')return queueJoin(ws,m.profile);
+  if(m.type==='bot') {clearRoom(ws);ws.profile=profile(m.profile);const room=newRoom(ws,'practice');start(room,true);return;}
+  if(m.type==='friend') {clearRoom(ws);ws.profile=profile(m.profile);const room=newRoom(ws,'friend');send(ws,{type:'friend',code:room.code,url:`?join=${room.code}`});return;}
+  if(m.type==='join') {
+   clearRoom(ws);const id=String(m.code||'').toUpperCase().replace(/[^0-9A-Z]/g,'').slice(0,6);const room=rooms.get(id);
+   if(!room||room.phase!=='waiting'||room.sockets[1])return send(ws,{type:'error',message:'That invite is expired or the match already started.'});
+   ws.profile=profile(m.profile);ws.room=room;room.sockets[1]=ws;room.profiles[1]=ws.profile;start(room,false);return;
   }
-  return crypto.randomUUID().slice(0,6).toUpperCase();
+  if(m.type==='cancel'){clearRoom(ws);send(ws,{type:'cancelled'});return;}
+  const room=ws.room;if(!room)return;
+  if(m.type==='play'&&room.phase==='playing'){
+   const side=room.sockets.indexOf(ws);if(side<0||!room.game)return;
+   const result=Game.play(room.game,side,String(m.card||''),Number(m.x),Number(m.y));
+   if(result.ok){emitState(room);broadcast(room,{type:'played',side,card:m.card,x:Number(m.x),y:Number(m.y)});}
+   else send(ws,{type:'rejected',message:result.reason});return;
+  }
+  if(m.type==='emote'&&room.phase==='playing'){
+   const idx=room.sockets.indexOf(ws);const allowed=['👋','😈','😱','💚','GG'];if(idx>=0&&allowed.includes(m.emote)){broadcast(room,{type:'emote',side:idx,emote:m.emote});}return;
+  }
+  if(m.type==='rematch'&&room.phase==='over'){
+   if(room.bot){room.sentResult=false;start(room,true);return;}
+   const idx=room.sockets.indexOf(ws);if(idx<0)return;room.again.add(idx);broadcast(room,{type:'rematch_status',count:room.again.size});
+   if(room.again.size===2){room.sentResult=false;start(room,false);}return;
+  }
+ });
+ ws.on('close',()=>{clearRoom(ws);connections.delete(ws);});
+ ws.on('error',()=>{clearRoom(ws);connections.delete(ws);});
 }
-function safeProfile(p) {
-  return {name:String(p?.name || 'Glooper').replace(/[<>\u0000-\u001f]/g,'').trim().slice(0,14)||'Glooper',color:['mint','berry','sun','blue','purple'].includes(p?.color)?p.color:'mint',perks: Object.fromEntries(['heart','power','sneakers','magnet'].map(k=>[k, Math.max(0,Math.min(5,Number(p?.perks?.[k])||0))]))};
-}
-function members(room) {return [...room.members].map(c=>({id:c.pid,profile:c.profile}));}
-function broadcast(room, data, except) {const encoded=JSON.stringify(data); for(const c of room.members) if(c!==except) send(c,encoded);}
-function leave(ws) {
-  const room=ws.room; if (!room) return;
-  ws.room=null;
-  room.members.delete(ws);
-  if (room.host === ws) {
-    if(room.public && room.members.size) {
-      room.host=[...room.members][0];
-      broadcast(room,{type:'host_changed',id:room.host.pid,left:ws.pid,players:members(room)});
-    } else {
-      broadcast(room,{type:'room_closed',message:'The host left the party.'});
-      for(const c of room.members) c.room=null;
-      rooms.delete(room.code);
-    }
-  } else broadcast(room,{type:'player_left',id:ws.pid,players:members(room)});
-  if(!room.members.size)rooms.delete(room.code);
-}
-function onConnection(ws){
-  ws.alive=true; ws.on('pong',()=>ws.alive=true);
-  ws.on('message',(raw)=>{
-    let m; try{m=JSON.parse(raw.toString());}catch{return send(ws,{type:'error',message:'Invalid message.'});}
-    if(!m || typeof m.type!=='string') return;
-    // One-tap matchmaking. Public matches start instantly, and other players can drop in mid-run.
-    if(m.type==='match') {
-      if(ws.room)return send(ws,{type:'error',message:'Already playing.'});
-      const profile=safeProfile(m.profile);
-      const available=[...rooms.values()].filter(r=>r.public && r.phase==='game' && r.members.size<MAX_ROOM && (r.elapsed||0)<145);
-      available.sort((a,b)=>b.members.size-a.members.size||a.born-b.born);
-      let room=available[0];
-      if(!room) {
-        const id=code();
-        room={code:id,host:ws,members:new Set([ws]),nextId:2,phase:'game',public:true,elapsed:0,born:Date.now()};
-        ws.room=room;ws.pid='p1';ws.profile=profile;rooms.set(id,room);
-        return send(ws,{type:'matched',role:'host',code:id,id:ws.pid,players:members(room),phase:'game'});
-      }
-      ws.room=room;ws.pid='p'+room.nextId++;ws.profile=profile;room.members.add(ws);
-      send(ws,{type:'matched',role:'guest',code:room.code,id:ws.pid,players:members(room),phase:'game'});
-      return broadcast(room,{type:'player_joined',players:members(room),id:ws.pid,profile},ws);
-    }
-    if(m.type==='create') {
-      if(ws.room) return send(ws,{type:'error',message:'Already in a room.'});
-      const id=code(), profile=safeProfile(m.profile);
-      const room={code:id,host:ws,members:new Set([ws]),nextId:2,phase:'lobby',born:Date.now()};
-      ws.room=room;ws.pid='p1';ws.profile=profile;rooms.set(id,room);
-      return send(ws,{type:'created',code:id,id:ws.pid,players:members(room)});
-    }
-    if(m.type==='join') {
-      if(ws.room) return send(ws,{type:'error',message:'Already in a room.'});
-      const id=String(m.code||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-      const room=rooms.get(id);
-      if(!room) return send(ws,{type:'error',message:'Party not found. Double-check the code.'});
-      if(room.phase!=='lobby' && !(room.public&&room.phase==='game')) return send(ws,{type:'error',message:'That party is not accepting players right now.'});
-      if(room.members.size>=MAX_ROOM) return send(ws,{type:'error',message:'That party is full (4 players max).'});
-      ws.room=room;ws.pid='p'+room.nextId++;ws.profile=safeProfile(m.profile);room.members.add(ws);
-      send(ws,{type:'joined',code:id,id:ws.pid,players:members(room),phase:room.phase,public:!!room.public});
-      return broadcast(room,{type:'player_joined',players:members(room),id:ws.pid,profile:ws.profile},ws);
-    }
-    const room=ws.room;
-    if(!room) return;
-    if(m.type==='profile' && room.phase==='lobby') {ws.profile=safeProfile(m.profile);return broadcast(room,{type:'players',players:members(room)});}
-    if(m.type==='start' && room.host===ws && room.phase==='lobby') {room.phase='game';return broadcast(room,{type:'started',players:members(room)},ws);}
-    if(m.type==='input' && room.host!==ws && room.phase==='game') {
-      const i=m.input||{};
-      return send(room.host,{type:'remote_input',from:ws.pid,input:{x:Math.max(-1,Math.min(1,Number(i.x)||0)),y:Math.max(-1,Math.min(1,Number(i.y)||0)),dash:!!i.dash,blast:!!i.blast}});
-    }
-    if(m.type==='choice' && room.host!==ws && room.phase==='game') return send(room.host,{type:'remote_choice',from:ws.pid,index:Math.max(0,Math.min(2,Number(m.index)||0))});
-    if(m.type==='snapshot' && room.host===ws && room.phase==='game' && m.state) {
-      if(room.public)room.elapsed=Number(m.state.t)||0;
-      return broadcast(room,{type:'snapshot',state:m.state},ws);
-    }
-    if(m.type==='ended' && room.host===ws && room.phase==='game') {room.phase='results';return broadcast(room,{type:'ended',results:m.results},ws);}
-    if(m.type==='restart' && room.host===ws && room.phase==='results') {
-      room.phase=room.public?'game':'lobby';room.elapsed=0;
-      return broadcast(room,{type:'restarted',auto:!!room.public,players:members(room)},ws);
-    }
-  });
-  ws.on('close',()=>leave(ws));
-  ws.on('error',()=>leave(ws));
-}
-const heartbeat=setInterval(()=>{for(const ws of wss.clients){if(!ws.alive){ws.terminate();continue;}ws.alive=false;ws.ping();}},30000);
-server.on('close',()=>clearInterval(heartbeat));
-if(require.main===module) server.listen(PORT,'0.0.0.0',()=>console.log(`Gloop Gang running at http://localhost:${PORT}`));
-module.exports={server,rooms};
+const heartbeat=setInterval(()=>{for(const ws of connections){if(!ws.alive){ws.terminate();continue;}ws.alive=false;ws.ping();}},30000);
+const tick=setInterval(()=>{
+ const now=Date.now();
+ for(const ws of [...queue]){
+  if(ws.readyState!==1||ws.room){queueRemove(ws);continue;}
+  // If nobody else is online, start against an explicitly named bot instead of making people wait.
+  if(now-ws.queuedAt>=8500){queueRemove(ws);const room=newRoom(ws,'online');start(room,true);send(ws,{type:'notice',message:'No human opponent found. Facing Glooptron instead!'});}
+ }
+ for(const room of rooms.values()){
+  if(room.phase==='waiting'&&now-room.created>300000){rooms.delete(room.code);broadcast(room,{type:'notice',message:'Invite expired.'});for(const s of room.sockets)if(s)s.room=null;}
+  if(room.phase!=='playing'||!room.game)continue;
+  let dt=Math.min((now-room.updated)/1000,.12);room.updated=now;
+  if(room.bot){room.lastBot+=dt;if(room.lastBot>=.12){Game.aiMove(room.game,1,1.2);room.lastBot=0;}}
+  Game.step(room.game,dt);
+  if(now-room.lastState>100){room.lastState=now;emitState(room);}
+  if(room.game.phase==='over'){emitState(room);finishRound(room);}
+ }
+},50);
+server.on('close',()=>{clearInterval(heartbeat);clearInterval(tick);});
+if(require.main===module)server.listen(PORT,'0.0.0.0',()=>console.log(`Gloop Gang Rift Rumble http://localhost:${PORT}`));
+module.exports={server,rooms,queue};

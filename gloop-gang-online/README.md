@@ -1,57 +1,65 @@
-# GLOOP GANG — INSTANT ONLINE EDITION
+# GLOOP GANG: RIFT RUMBLE
 
-A mobile-first, multiplayer arcade survival game. This edition adds **one-tap online matchmaking**, mid-game joins, friend invites, and host migration. No accounts, downloads or party codes are necessary for public multiplayer **once this Node.js app is deployed**.
+Version 2.0 — A fresh, mobile-first *real-time strategy* game, replacing the survival/shooter game.
 
-## How players use it once hosted
+## Just play
 
-1. Open the site's URL on iPhone, Android, tablet or PC.
-2. Tap **🌐 PLAY ONLINE**. Your round starts right away. If other public rounds have room, you join an existing one. If not, you start a new open round that others can join.
-3. Tap the **↗** icon in the game to share your room link. A friend opening that link immediately joins your ongoing match if space remains.
-4. Keep collecting XP, picking upgrades, dashing, blasting, and earning coins for permanent buffs.
+Once hosted, share the website address (for example `https://gloop-gang.onrender.com`). Play on Android, iPhone, tablet or computer without an account or download.
 
-Other choices are **PLAY SOLO** (offline while installed as a PWA) and **PRIVATE PARTY** (host/guest using a shareable link or six-character code). You can continue using keyboard or phone-touch controls.
+* **Battle Online** matches you with a human opponent in the queue. If there is no human opponent within ~8.5 seconds, you get a clearly-labelled bot battle instead.
+* **Play With a Friend** generates a private link. Your friend just opens the link and the game starts — no account, manually entered codes, or lobby setup needed.
+* **VS Bot** starts immediately. When disconnected from the server, it falls back to local offline practice.
 
-**Important:** This download is source code. It is **not currently hosted**. Someone needs to deploy it to a public Node.js host to make the PLAY ONLINE button usable over the internet.
+Drag a card onto the battlefield, or select a card and tap a valid location. Troops/buildings must go on your half of the arena; spells can target anywhere. PC: press number keys 1–4 to select cards.
+
+## Rules
+
+Two lanes, two side towers and one protected core per player. 8-card deck, 4-card rotating hand. Troops advance automatically and attack. Spells affect a marked area. A card costs between 2 and 6 GOO. GOO regenerates over time, doubles near the end, and regenerates faster for controlling the two rifts on the bridges.
+
+Destroy an enemy side tower to make their core vulnerable; destroying their core wins instantly. If time runs out after 2 minutes 45 seconds, surviving towers and their remaining health determine the winner.
+
+Earn coins and trophies after battles, unlock new cards by trophy milestones and spend coins to level up your favourites. Stats and progression are saved in that browser's local storage (NOT across phones, clearing the browser will erase them). 15 cards: troops, splash attackers, towers, healers, fast attackers, tanks, area damage, slow and speed boosts. All visuals are custom-drawn with Canvas; no game engine or external assets required.
+
+## Update your EXISTING website on Render
+
+Your current GitHub repository (from the earlier setup) has a folder named `gloop-gang-online`, and your existing Render Web Service points its **Root Directory** there.
+
+**To replace the old survival game and keep the same URL:**
+
+1. Unzip the new ZIP file. It contains a replacement folder also named `gloop-gang-online`.
+2. On your GitHub repository, open the existing `gloop-gang-online` folder, then use **Add file → Upload files** to upload the new folder's CONTENTS (including `server.js`, `package.json`, `public/index.html`, `public/style.css`, `public/app.js`, `public/core.js`, etc.) **into that same folder**. Commit the changes. GitHub's web upload may require dragging the `public` folder; ensure that its files are inside `gloop-gang-online/public/` after committing.
+3. In Render, leave **Root Directory = `gloop-gang-online`**. Language Node, build command `npm install`, start command `node server.js`. On an existing service, Render normally auto-deploys a new commit; if not, use **Manual Deploy → Deploy latest commit**.
+4. Wait for Render **Live**, open your old website address and refresh. If the old game still appears, hard refresh (Ctrl+Shift+R on desktop), or clear site cache on mobile. The service worker uses a new cache version.
+
+Alternatively, if you upload everything at the GitHub repository root, set Root Directory in Render to blank. The `package.json`, `server.js` and `public` folder must all be in the same root directory.
+
+**Important:** This ZIP cannot update GitHub or Render on its own. Upload and commit the updated code to put the new game on the live website. The existing Render plan may go idle after inactivity; when it wakes, matching resumes, and an in-progress match can disconnect if the host restarts or redeploys.
 
 ## Run locally
 
-Requires Node.js 18+.
+Requires Node.js 18+. There are **no third-party npm dependencies**.
 
 ```sh
-node server.js
+npm install
+npm start
 ```
 
-Open http://localhost:3000. On phones on the same LAN, open http://YOUR_COMPUTER_IP:3000 (firewall allowing inbound port 3000).
+Open http://localhost:3000 and use two browser tabs/devices to play together. Run `npm test` to verify simulation, HTTP, online matchmaking, friend joining and result delivery.
 
-```sh
-npm test
-```
+## File layout
 
-This verifies legacy party rooms, instant matchmaking, invites, WebSocket state transfer, host migration and solo gameplay.
+`server.js` — HTTP/WebSocket server, authoritative game loop, private invites, quick-match queue, bot fallback.
 
-## Put it online for everyone
+`public/core.js` — shared rules/AI, cards, energy, unit movement and combat.
 
-**Render Web Service:** The root folder has `package.json` and `render.yaml`. Upload the contents of this folder to a GitHub repository (the folder itself should be the repository root). In Render, create a Node.js **Web Service** from that repository (or deploy using Blueprint from `render.yaml`). Start command: `node server.js`. No build step is required, though `npm install` is fine. The app already uses the host-provided `PORT` and `0.0.0.0`, and uses same-origin HTTPS/WSS for all player connections.
+`public/app.js` — mobile/desktop inputs, game screens, Canvas renderer, UI and stored progression.
 
-Render's free web services currently pause after 15 minutes with no requests, and need time to wake on the next visit. An always-on paid plan removes that limitation. Hosting providers may charge based on their plans/usage, so review settings before deploying.
+`public/style.css` — responsive interface.
 
-**After deployment** you can simply share the `https://YOUR-SERVICE.onrender.com` URL with anyone. Do not put your own PC's `localhost:3000` link in an invitation.
+`public/sw.js`, `manifest.webmanifest`, `icon.svg` — installable PWA and offline assets for local practice.
 
-## Game systems
+`test.js` — server/game integration tests.
 
-- Public 1–4 player drop-in matches with no code, instant start and automatic filling of available matches
-- Invite friends during an active public round via a share button and deep link
-- Private lobby parties, room codes, deep-link autojoin
-- Host handover for public matches when a host leaves (the latest shared state is used by the new host)
-- 3-minute survival rounds, enemy waves, bosses and revives
-- 15 in-round random upgrades, 4 permanent purchasable perks (5 levels each)
-- Autoshot, dash, radial blast, XP gems, hearts, results and coins
-- Touch joystick/buttons on phone, WASD/arrow keys with Space and E on desktop
-- Saved progress on each player's own browser (`localStorage`)
-- Installable progressive web app on HTTPS
+## Limitations and improvements
 
-## Technical limitations
-
-This is a hobby-game architecture: the first player in each room simulates and broadcasts the game world, while a lightweight Node.js WebSocket server matches players and relays their state. Joining a mid-round public game is possible until near the end of a match. Room matchmaking operates within **one server instance**. Server redeploys/restarts reset active matches. Profiles and upgrades remain local to each browser, not cloud-synced. Competitive scaling, persistent public rankings, anticheat, account sync and global multi-instance matchmaking would require backend upgrades. Host migration keeps sessions going after a player leaves but can still show a short jump in world state.
-
-Files: `server.js` (HTTP, WebSockets, matchmaking), `public/` (client, CSS, images, PWA), `test-server.js`, `test-matchmaking.js`, `test-game.js` and `render.yaml`.
+The current game is a playable small-scale game, not a production esports backend. Rooms and matchmaking exist only in the memory of one Render service instance; updates restart them. There is no cloud save or user account, and the server trusts a player's supplied deck/progression (not suitable for real-money competitions). Friend links work for one live two-player match at a time. Queue matchmaking groups users on the same server; after ~8.5 seconds of waiting, it starts a bot game. Multiplayer requires an online WebSocket connection. There is no paid content, chat or public ranking service.
